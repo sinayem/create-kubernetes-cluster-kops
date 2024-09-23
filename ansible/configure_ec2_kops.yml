@@ -1,0 +1,102 @@
+---
+- name: Configure EC2 instance for Kops
+  hosts: ec2_instance
+  become: true
+  vars:
+    kops_version: "v1.28.7"  # Replace with the desired version
+    kubectl_version: "v1.30.3"  # Replace with the desired version
+    user_home: "/home/ubuntu"
+    state_file: "s3://sinayem-kops-123.in"
+
+  tasks:
+    - name: Create SSH key pair
+      user:
+        name: "{{ ansible_user }}"
+        generate_ssh_key: yes
+        ssh_key_bits: 2048
+        ssh_key_file: .ssh/kops-123
+
+
+    - name: Download Kops using wget
+      command: wget https://github.com/kubernetes/kops/releases/download/{{ kops_version }}/kops-linux-amd64 -O /usr/local/bin/kops-linux-amd64
+      args:
+        creates: /usr/local/bin/kops-linux-amd64
+
+    - name: Rename Kops binary
+      command: mv /usr/local/bin/kops-linux-amd64 /usr/local/bin/kops
+
+    - name: Ensure Kops has correct permissions
+      file:
+        path: /usr/local/bin/kops
+        mode: '0755'
+
+    - name: Download kubectl using wget
+      command: wget https://dl.k8s.io/release/{{ kubectl_version }}/bin/linux/amd64/kubectl -O /usr/local/bin/kubectl
+      args:
+        creates: /usr/local/bin/kubectl
+
+    - name: Ensure kubectl has correct permissions
+      file:
+        path: /usr/local/bin/kubectl
+        mode: '0755'
+
+    - name: Update .bashrc
+      blockinfile:
+        path: "{{ user_home }}/.bashrc"
+        block: |
+          export NAME=sinayem-kops-123.in
+          export KOPS_STATE_STORE=s3://sinayem-kops-123.in
+          export AWS_REGION=us-east-1
+          export CLUSTER_NAME=sinayem-kops-123.in
+          export EDITOR='/usr/bin/vim'
+
+    - name: Source .bashrc
+      become_user: ubuntu
+      shell: source .bashrc
+      args:
+        executable: /bin/bash
+
+    - name: Create Kops cluster configuration
+      become_user: ubuntu
+      shell: |
+        kops create cluster --name=sinayem-kops-123.in \
+        --state=s3://sinayem-kops-123.in --zones=us-east-1a,us-east-1b \
+        --node-count=2 --control-plane-count=1 --node-size=t2.micro --control-plane-size=t2.micro \
+        --control-plane-zones=us-east-1a --control-plane-volume-size 10 --node-volume-size 10 \
+        --ssh-public-key ~/.ssh/kops-123.pub \
+        --dns-zone=sinayem-kops-123.in --dry-run --output yaml
+      register: kops_output
+
+    - name: Save Kops configuration to cluster.yml
+      become_user: ubuntu
+      copy:
+        content: "{{ kops_output.stdout }}"
+        dest: /home/ubuntu/cluster.yml
+        owner: ubuntu
+        group: ubuntu
+        mode: '0644'
+
+    - name: Create cluster from configuration
+      become: yes
+      become_user: ubuntu
+      shell: |
+        export KOPS_STATE_STORE={{ state_file }}
+        kops create -f cluster.yml
+      args:
+        executable: /bin/bash
+
+    - name: Update cluster
+      become_user: ubuntu
+      shell: |
+        export KOPS_STATE_STORE={{ state_file }}
+        kops update cluster --name sinayem-kops-123.in --yes --admin
+
+      args:
+        executable: /bin/bash
+
+    - name: Validate cluster
+      become_user: ubuntu
+      shell: kops validate cluster --wait 10m
+      args:
+        executable: /bin/bash
+  
